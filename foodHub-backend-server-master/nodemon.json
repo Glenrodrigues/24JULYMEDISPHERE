@@ -1,0 +1,9 @@
+{
+  "env": {
+    "MONGO_USER":"GlenRodrigues",
+    "MONGO_PASSWORD":"E3IW2WcV2V3x5ybU",
+    "MONGO_DATABASE":"foodapps",
+    "SENDGRID_KEY": "37797a36786a43ff9549fa0a37f02b08"
+    
+  }
+}

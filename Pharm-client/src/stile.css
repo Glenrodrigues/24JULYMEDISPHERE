@@ -1,0 +1,12 @@
+.contain {
+    
+    font-family:"Roboto", "Helvetica", "Arial",sans-serif;
+    line-height: 1;
+    border-radius: 4px;
+    letter-spacing: 0.02857em;
+    text-transform: uppercase;
+     /* optional: add some space between the box and other elements */
+ }
+ .typography {
+    border: 1px solid black;
+  }
