@@ -220,139 +220,251 @@ exports.postAddress = (req, res, next) => {
     });
 };
 
-exports.getLoggedInUser = (req, res, next) => {
-  const authHeader = req.get("Authorization");
-  if (!authHeader) {
-    const error = new Error("Not authenticated");
-    error.statusCode = 401;
-    throw error;
-  }
 
-  const token = authHeader.split(" ")[1];
-  let decodedToken;
+// exports.getLoggedInUser = (req, res, next) => {
+//   const authHeader = req.get("Authorization");
+//   if (!authHeader) {
+//     const error = new Error("Not authenticated");
+//     error.statusCode = 401;
+//     throw error;
+//   }
+
+//   const token = authHeader.split(" ")[1];
+//   let decodedToken;
+//   try {
+//     decodedToken = jwt.verify(token, "supersecretkey-foodWebApp");
+//   } catch (err) {
+//     err.statusCode = 500;
+//     throw err;
+//   }
+//   if (!decodedToken) {
+//     const error = new Error("Not authenticated");
+//     error.statusCode = 401;
+//     throw error;
+//   }
+
+//   const accountId = decodedToken.accountId;
+//   let accountObj;
+//   let sellerObj;
+
+//   Account.findById(accountId)
+//     .then((account) => {
+//       if (!account) {
+//         const error = new Error("Internal server error");
+//         error.statusCode = 500;
+//         throw error;
+//       }
+//       accountObj = account;
+//       return User.findOne({ account: account._id }).populate({
+//         path: "account",
+//         select: ["email", "role"],
+//       });
+//     })
+//     .then((user) => {
+//       if (user) {
+//         return user;
+//       } else {
+//         return Seller.findOne({ account: accountObj._id })
+//           .populate("items")
+//           .populate({ path: "account", select: ["email", "role"] })
+
+//           .then((Seller) => {
+//             if (Seller) {
+//               return Seller;
+//             } else{
+//               return Doctor.findOne({ account:accountObj._id })
+//                 .populate({path: "account",select : ["email","role"]});
+//             }
+//           });
+//       }
+//     })
+//     .then((result) => {
+//       res.json({ result });
+//     })
+//     .catch((err) => {
+//       if (!err.statusCode) err.statusCode = 500;
+//       next(err);
+//     });
+// };
+
+exports.getLoggedInUser = async (req, res, next) => {
   try {
-    decodedToken = jwt.verify(token, "supersecretkey-foodWebApp");
-  } catch (err) {
-    err.statusCode = 500;
-    throw err;
-  }
-  if (!decodedToken) {
-    const error = new Error("Not authenticated");
-    error.statusCode = 401;
-    throw error;
-  }
+    const authHeader = req.get("Authorization");
+    if (!authHeader) throw new Error("Not authenticated");
 
-  const accountId = decodedToken.accountId;
-  let accountObj;
-  let sellerObj;
+    const token = authHeader.split(" ")[1];
+    const decodedToken = jwt.verify(token, "supersecretkey-foodWebApp");
+    if (!decodedToken) throw new Error("Not authenticated");
 
-  Account.findById(accountId)
-    .then((account) => {
-      if (!account) {
-        const error = new Error("Internal server error");
-        error.statusCode = 500;
-        throw error;
-      }
-      accountObj = account;
-      return User.findOne({ account: account._id }).populate({
+    const account = await Account.findById(decodedToken.accountId);
+    if (!account) throw new Error("Account not found");
+
+    let result = null;
+
+    if (account.role === "ROLE_USER") {
+      result = await User.findOne({ account: account._id }).populate({
         path: "account",
         select: ["email", "role"],
       });
-    })
-    .then((user) => {
-      if (user) {
-        return user;
-      } else {
-        return Seller.findOne({ account: accountObj._id })
-          .populate("items")
-          .populate({ path: "account", select: ["email", "role"] })
+    } else if (account.role === "ROLE_SELLER") {
+      result = await Seller.findOne({ account: account._id })
+        .populate("items")
+        .populate({ path: "account", select: ["email", "role"] });
+    } else if (account.role === "ROLE_DOCTOR") {
+      result = await Doctor.findOne({ account: account._id }).populate({
+        path: "account",
+        select: ["email", "role"],
+      });
+    }
 
-          .then((Seller) => {
-            if (Seller) {
-              return Seller;
-            } else{
-              return Doctor.findOne({ account:accountObj._id })
-                .populate({path: "account",select : ["email","role"]});
-            }
-          });
-      }
-    })
-    .then((result) => {
-      res.json({ result });
-    })
-    .catch((err) => {
-      if (!err.statusCode) err.statusCode = 500;
-      next(err);
-    });
+    if (!result) throw new Error("User profile not found");
+
+    res.status(200).json({ result });
+  } catch (err) {
+    err.statusCode = err.statusCode || 500;
+    next(err);
+  }
 };
 
-exports.postOrder = (req, res, next) => {
-  let accountObj;
-  let userObj;
-  Account.findById(req.loggedInUserId)
-    .then((account) => {
-      accountObj = account;
-      return User.findOne({ account: account._id });
-    })
-    .then((user) => {
-      userObj = user;
-      return user.populate("cart.items.itemId").execPopulate();
-    })
-    .then((result) => {
-      const sellers = result.cart.items.reduce((acc, item) => {
-        if (!acc[item.itemId.creator]) {
-          acc[item.itemId.creator] = [];
+exports.postOrder = async (req, res, next) => {
+  try {
+    const accountObj = await Account.findById(req.loggedInUserId);
+    const userObj = await User.findOne({ account: accountObj._id });
+    const result = await userObj.populate("cart.items.itemId").execPopulate();
+
+    const sellers = result.cart.items.reduce((acc, item) => {
+      const creatorId = item.itemId.creator;
+      if (!acc[creatorId]) {
+        acc[creatorId] = [];
+      }
+      acc[creatorId].push(item);
+      return acc;
+    }, {});
+
+    const orderPromises = Object.entries(sellers).map(async ([sellerId, cartItems]) => {
+      let sellerOrDoctor = await Seller.findById(sellerId);
+
+      // If not found in Seller, check Doctor
+      if (!sellerOrDoctor) {
+        sellerOrDoctor = await Doctor.findById(sellerId);
+      }
+
+      if (!sellerOrDoctor) {
+        console.error("No Seller or Doctor found for ID:", sellerId);
+        return;
+      }
+
+      const items = cartItems.map((i) => ({
+        quantity: i.quantity,
+        item: { ...i.itemId._doc },
+      }));
+
+      const order = new Order({
+        user: {
+          email: accountObj.email,
+          name: result.firstName,
+          address: result.address,
+          userId: result,
+        },
+        items,
+        status: "Placed",
+        seller: {
+          name: sellerOrDoctor.name,
+          phone: sellerOrDoctor.address.phoneNo,
+          sellerId: sellerOrDoctor._id,
+        },
+      });
+
+      const savedOrder = await order.save();
+
+      for (const clientId of Object.keys(app.clients)) {
+        if (clientId.toString() === sellerOrDoctor._id.toString()) {
+          io.getIO().sockets.connected[
+            app.clients[clientId].socket
+          ]?.emit("orders", { action: "create", order: savedOrder });
         }
-
-        acc[item.itemId.creator].push(item);
-        return acc;
-      }, {});
-
-      for (let [seller, cartItem] of Object.entries(sellers)) {
-        Seller.findById(seller).then((seller) => {
-          const items = cartItem.map((i) => {
-            return { quantity: i.quantity, item: { ...i.itemId._doc } };
-          });
-          const order = new Order({
-            user: {
-              email: accountObj.email,
-              name: result.firstName,
-              address: result.address,
-              userId: result,
-            },
-            items: items,
-            status: "Placed",
-            seller: {
-              name: seller.name,
-              phone: seller.address.phoneNo,
-              sellerId: seller,
-            },
-          });
-
-          order.save();
-          for (const clientId of Object.keys(app.clients)) {
-            // console.log(app.clients[clientId].socket);
-            if (clientId.toString() === seller._id.toString()) {
-              io.getIO().sockets.connected[
-                app.clients[clientId].socket
-              ].emit("orders", { action: "create", order: order });
-            }
-          }
-        });
       }
-      return result;
-    })
-    .then((result) => {
-      return userObj.clearCart();
-    })
-    .then((result) => {
-      res.status(200).json({ result });
-    })
-    .catch((err) => {
-      if (!err.statusCode) err.statusCode = 500;
-      next(err);
     });
+
+    await Promise.all(orderPromises);
+    await userObj.clearCart();
+    res.status(200).json({ result });
+
+  } catch (err) {
+    console.error("Order error:", err);
+    err.statusCode = err.statusCode || 500;
+    next(err);
+  }
 };
+
+
+// exports.postOrder = (req, res, next) => {
+//   let accountObj;
+//   let userObj;
+//   Account.findById(req.loggedInUserId)
+//     .then((account) => {
+//       accountObj = account;
+//       return User.findOne({ account: account._id });
+//     })
+//     .then((user) => {
+//       userObj = user;
+//       return user.populate("cart.items.itemId").execPopulate();
+//     })
+//     .then((result) => {
+//       const sellers = result.cart.items.reduce((acc, item) => {
+//         if (!acc[item.itemId.creator]) {
+//           acc[item.itemId.creator] = [];
+//         }
+
+//         acc[item.itemId.creator].push(item);
+//         return acc;
+//       }, {});
+
+//       for (let [seller, cartItem] of Object.entries(sellers)) {
+//         Seller.findById(seller).then((seller) => {
+//           const items = cartItem.map((i) => {
+//             return { quantity: i.quantity, item: { ...i.itemId._doc } };
+//           });
+//           const order = new Order({
+//             user: {
+//               email: accountObj.email,
+//               name: result.firstName,
+//               address: result.address,
+//               userId: result,
+//             },
+//             items: items,
+//             status: "Placed",
+//             seller: {
+//               name: seller.name,
+//               phone: seller.address.phoneNo,
+//               sellerId: seller,
+//             },
+//           });
+
+//           order.save();
+//           for (const clientId of Object.keys(app.clients)) {
+//             // console.log(app.clients[clientId].socket);
+//             if (clientId.toString() === seller._id.toString()) {
+//               io.getIO().sockets.connected[
+//                 app.clients[clientId].socket
+//               ].emit("orders", { action: "create", order: order });
+//             }
+//           }
+//         });
+//       }
+//       return result;
+//     })
+//     .then((result) => {
+//       return userObj.clearCart();
+//     })
+//     .then((result) => {
+//       res.status(200).json({ result });
+//     })
+//     .catch((err) => {
+//       if (!err.statusCode) err.statusCode = 500;
+//       next(err);
+//     });
+// };
 
 exports.getOrders = (req, res, next) => {
   const authHeader = req.get("Authorization");
@@ -384,7 +496,7 @@ exports.getOrders = (req, res, next) => {
         return User.findOne({ account: account._id });
       if (account.role === "ROLE_SELLER")
         return Seller.findOne({ account: account._id });
-      if (account.role === "ROLE_DOCTOR") //ade change kele DCOTOR
+      if (account.role === "ROLE_DOCTOR") // ade change kele DCOTOR
         return Doctor.findOne({ account: account._id });
     })
     .then((result) => {
@@ -396,6 +508,12 @@ exports.getOrders = (req, res, next) => {
         return Order.find({ "seller.sellerId": result._id }).sort({
           createdAt: -1,
         });
+      if (result instanceof Doctor) 
+        return Order.find({ "seller.sellerId": result._id }).sort({
+           createdAt: -1 
+        });
+        
+
     })
     .then((orders) => {
       res.status(200).json({ orders });
@@ -509,5 +627,91 @@ exports.getPharmacyByAddress = (req, res, next) => {
     .catch((err) => {
       if (!err.statusCode) err.statusCode = 500;
       next(err);
+    });
+};
+
+
+// exports.getDoctorList = (req, res, next) => {
+  
+//   const authHeader = req.get("Authorization");
+//   if (!authHeader) {
+//     const error = new Error("Not authenticated");
+//     error.statusCode = 401;
+//     throw error;
+//   }
+
+//   const token = authHeader.split(" ")[1];
+//   let decodedToken;
+//   try {
+//     decodedToken = jwt.verify(token, "supersecretkey-foodWebApp");
+//   } catch (err) {
+//     err.statusCode = 500;
+//     throw err;
+//   }
+//   if (!decodedToken) {
+//     const error = new Error("Not authenticated");
+//     error.statusCode = 401;
+//     throw error;
+//   }
+
+  
+//   const speciality = req.query.speciality;
+//   let doctors;
+//   if (speciality) {
+//     doctors = Doctor.find({ tags: { $regex: speciality, $options: "i" } });
+
+//   } else {
+//     doctors = Doctor.find();
+//   }
+
+//   doctors
+//   .then((doctors) => {
+//     res.status(200).json(doctors);
+//   })
+//   .catch((error) => {
+//     res.status(500).json({ message: 'Error fetching doctors', error });
+//   })
+// };
+
+exports.getDoctorList = (req, res, next) => {
+  const authHeader = req.get("Authorization");
+  if (!authHeader) {
+    const error = new Error("Not authenticated");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const token = authHeader.split(" ")[1];
+  let decodedToken;
+  try {
+    decodedToken = jwt.verify(token, "supersecretkey-foodWebApp");
+  } catch (err) {
+    err.statusCode = 500;
+    throw err;
+  }
+
+  if (!decodedToken) {
+    const error = new Error("Not authenticated");
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const speciality = req.query.speciality;
+  let doctors;
+
+  if (speciality) {
+    doctors = Doctor.find({
+      tags: { $regex: speciality, $options: "i" },
+    });
+  } else {
+    doctors = Doctor.find();
+  }
+
+  doctors
+    .then((doctors) => {
+      res.status(200).json(doctors);
+    })
+    .catch((error) => {
+      res.status(500).json({ message: "Error fetching doctors", error });
     });
 };
